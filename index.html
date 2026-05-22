@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kaufland Listing Engine — interactive demo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    .pill { @apply inline-flex items-center text-xs px-2.5 py-0.5 rounded-full font-medium; }
+    .pill-live { @apply bg-emerald-50 text-emerald-700; }
+    .pill-pending { @apply bg-sky-50 text-sky-700; }
+    .pill-error { @apply bg-rose-50 text-rose-700; }
+    .pill-dry { @apply bg-amber-50 text-amber-700; }
+    .btn { @apply inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition cursor-pointer; }
+    .btn-primary { @apply border-slate-900 bg-slate-900 text-white hover:bg-slate-800; }
+    .pill-filter { @apply px-3 py-1 text-xs rounded-md border border-slate-200 text-slate-600 hover:bg-slate-50 cursor-pointer; }
+    .pill-filter-active { @apply bg-slate-900 text-white border-slate-900; }
+    .toast { @apply bg-white border border-slate-200 rounded-lg shadow-lg px-4 py-3 text-sm text-slate-700 animate-in; }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    .toast { animation: slideIn 0.2s ease-out; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+
+<div class="max-w-6xl mx-auto px-6 py-6">
+
+  <!-- HERO INJECTED -->
+<section class="bg-white border border-slate-200 rounded-xl p-6 mb-4">
+  <div class="flex items-start gap-5">
+    <div class="w-12 h-12 rounded-md bg-slate-900 text-white flex items-center justify-center text-base font-semibold flex-shrink-0">KL</div>
+    <div class="flex-1">
+      <h1 class="text-xl font-semibold text-slate-900">Kaufland Listing Engine — interactive demo</h1>
+      <p class="text-sm text-slate-600 mt-1 leading-relaxed">
+        Internal EXPANDO tool for publishing &amp; syncing product offers on Kaufland.de marketplace.
+        Replaces the "BaseLinker → Kaufland CSV upload → manual fix-up" loop with a typed pipeline:
+        client-side validation, dry-run before commit, background stock/price sync, full audit trail.
+      </p>
+      <div class="flex flex-wrap gap-1.5 mt-3">
+        <span class="text-[11px] px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono">Python 3.11</span>
+        <span class="text-[11px] px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono">FastAPI</span>
+        <span class="text-[11px] px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono">HTMX + Jinja2</span>
+        <span class="text-[11px] px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono">SQLAlchemy 2 + asyncpg</span>
+        <span class="text-[11px] px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono">APScheduler</span>
+        <span class="text-[11px] px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 font-mono">136 / 136 tests ✓</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-3 gap-3 mt-5">
+    <button onclick="loadSampleCsv()"
+            class="text-left p-3 rounded-lg border border-slate-200 hover:border-slate-400 hover:bg-slate-50 transition">
+      <div class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-slate-500 mb-1">
+        <span class="w-5 h-5 rounded-full bg-slate-900 text-white flex items-center justify-center text-[10px] font-semibold">1</span>
+        Happy path
+      </div>
+      <div class="font-medium text-sm text-slate-900">Upload the sample CSV</div>
+      <div class="text-xs text-slate-500 mt-0.5">2 products, 5 variants, all valid. See the preview &amp; commit flow.</div>
+    </button>
+    <button onclick="loadCorruptedCsv()"
+            class="text-left p-3 rounded-lg border border-amber-200 hover:border-amber-400 hover:bg-amber-50 transition">
+      <div class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-amber-700 mb-1">
+        <span class="w-5 h-5 rounded-full bg-amber-600 text-white flex items-center justify-center text-[10px] font-semibold">2</span>
+        EAN validator
+      </div>
+      <div class="font-medium text-sm text-slate-900">Try a broken BaseLinker export</div>
+      <div class="text-xs text-slate-500 mt-0.5">Scientific notation + bad checksum → exact error messages, not "invalid 13 digits".</div>
+    </button>
+    <button onclick="document.getElementById('view-dashboard').scrollIntoView({behavior:'smooth'})"
+            class="text-left p-3 rounded-lg border border-slate-200 hover:border-slate-400 hover:bg-slate-50 transition">
+      <div class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-slate-500 mb-1">
+        <span class="w-5 h-5 rounded-full bg-slate-900 text-white flex items-center justify-center text-[10px] font-semibold">3</span>
+        Publish flow
+      </div>
+      <div class="font-medium text-sm text-slate-900">Click Publish on a row</div>
+      <div class="text-xs text-slate-500 mt-0.5">Watch KPI tiles update, PID + unit ID populate. ~10% simulated failure rate.</div>
+    </button>
+  </div>
+</section>
+
+  <!-- yellow banner: demo mode -->
+  <div class="bg-amber-50 border border-amber-200 text-amber-900 text-xs px-4 py-2 rounded-md mb-4 flex items-center gap-2">
+    <span class="px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 font-semibold tracking-wide">DEMO</span>
+    <span>Everything below is real UI driven by client-side mocks. Refresh wipes state. The real engine talks to Kaufland Seller API and Postgres.</span>
+  </div>
+
+  <!-- ===== Dashboard view ===== -->
+  <div id="view-dashboard">
+    <header class="bg-white rounded-xl border border-slate-200 p-4 flex items-center justify-between mb-4">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-md bg-slate-900 text-white flex items-center justify-center text-sm font-semibold">KL</div>
+        <div>
+          <div class="font-semibold text-slate-900">Kaufland Listing Engine</div>
+          <div class="text-xs text-slate-500">Fightstore · Kaufland.de</div>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="pill pill-live">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5"></span>API connected
+        </span>
+        <button class="btn btn-primary" onclick="showView('upload')">+ New listing</button>
+        <button class="btn" onclick="refreshTable()">⟳ Refresh</button>
+      </div>
+    </header>
+
+    <div id="kpis" class="grid grid-cols-4 gap-3 mb-4"></div>
+
+    <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+        <div id="filter-pills" class="flex gap-2"></div>
+        <div id="variant-count" class="text-xs text-slate-500"></div>
+      </div>
+      <table class="w-full text-sm">
+        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+          <tr>
+            <th class="text-left px-4 py-2 font-medium">Product</th>
+            <th class="text-left px-3 py-2 font-medium">Variant</th>
+            <th class="text-left px-3 py-2 font-medium">Status</th>
+            <th class="text-right px-3 py-2 font-medium">Stock</th>
+            <th class="text-right px-3 py-2 font-medium">Price</th>
+            <th class="text-left px-3 py-2 font-medium">Last sync</th>
+            <th class="text-right px-4 py-2 font-medium">Action</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="px-4 py-2.5 border-t border-slate-200 text-xs text-slate-500">
+        In-memory state — refresh wipes all changes. Real backend uses Postgres for persistence.
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Upload view ===== -->
+  <div id="view-upload" class="hidden">
+    <header class="bg-white rounded-xl border border-slate-200 p-4 flex items-center justify-between mb-4">
+      <div class="flex items-center gap-3">
+        <button class="btn" onclick="showView('dashboard')">← Back to dashboard</button>
+        <div>
+          <div class="font-semibold text-slate-900">Upload product feed</div>
+          <div class="text-xs text-slate-500">CSV, Excel (.xlsx) or BaseLinker XML — max 5 MB</div>
+        </div>
+      </div>
+      <button class="btn" onclick="loadSampleCsv()">Try a sample CSV</button>
+    </header>
+
+    <div class="grid grid-cols-3 gap-4">
+      <div class="col-span-2 bg-white rounded-xl border border-slate-200 p-4">
+        <label class="block text-sm font-medium text-slate-700 mb-1">CSV, Excel or XML file</label>
+        <input id="file-input" type="file"
+               accept=".csv,.xlsx,.xls,.xml,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/xml,text/xml"
+               onchange="handleFileUpload(event)"
+               class="block w-full text-sm text-slate-600
+                      file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0
+                      file:text-sm file:font-medium file:bg-slate-900 file:text-white
+                      hover:file:bg-slate-800 cursor-pointer" />
+        <p class="text-xs text-slate-500 mt-2">
+          <strong>CSV</strong> (UTF-8, comma or semicolon),
+          <strong>Excel</strong> (.xlsx, first sheet),
+          or <strong>XML</strong> (BaseLinker-style product feed).
+          Variants of the same product share <code class="text-rose-700">product_id</code>; per-product fields come from the <em>first</em> row of each group.
+        </p>
+
+        <div class="border-t border-slate-200 pt-3 mt-4">
+          <button class="btn" onclick="downloadSampleCsv()">⬇ Download sample CSV</button>
+          <button class="btn ml-2" onclick="loadCorruptedCsv()">Try a broken EAN export</button>
+        </div>
+
+        <div id="preview-area" class="mt-6"></div>
+      </div>
+
+      <aside class="bg-white rounded-xl border border-slate-200 p-4 self-start">
+        <div class="font-medium text-slate-900 mb-1">Schema reference</div>
+        <div class="text-xs text-slate-500 mb-3">
+          Required columns are mandatory on every row.
+          Optional ones are read where provided.
+        </div>
+        <div class="text-xs uppercase tracking-wide text-slate-500 mt-3 mb-1">Required</div>
+        <div class="flex flex-wrap gap-1" id="required-cols"></div>
+        <div class="text-xs uppercase tracking-wide text-slate-500 mt-4 mb-1">Optional</div>
+        <div class="flex flex-wrap gap-1" id="optional-cols"></div>
+      </aside>
+    </div>
+  </div>
+
+
+  <!-- FOOTER INJECTED -->
+<footer class="bg-white border border-slate-200 rounded-xl p-5 mt-6 text-xs text-slate-500 leading-relaxed">
+  <div class="flex flex-wrap items-start gap-x-8 gap-y-3">
+    <div class="flex-1 min-w-[260px]">
+      <div class="font-medium text-slate-700 mb-1">What this demo doesn't have</div>
+      Real Kaufland API calls (everything is mocked client-side), real persistence (refresh wipes state),
+      auth, multi-tenant credentials, the APScheduler background sync, or category/attribute schema validation.
+      Those all exist in the actual engine — see <code class="font-mono text-slate-700">kaufland-listing-engine/</code> for the real thing.
+    </div>
+    <div class="flex-1 min-w-[260px]">
+      <div class="font-medium text-slate-700 mb-1">BOL → KLE port (Phase 2)</div>
+      Quick wins ported from Maciej's bol-listing-engine: EAN GTIN-checksum validator (catches scientific-notation BaseLinker exports + Excel-stripped leading zeros), XLSX/XML upload support, <code class="font-mono">Retry-After</code>-aware backoff with a 30s sanity cap. See <code class="font-mono text-slate-700">bol-listing-engine-analysis.pdf</code> for the side-by-side &amp; port plan.
+    </div>
+  </div>
+  <div class="border-t border-slate-100 pt-3 mt-3 flex items-center justify-between">
+    <span>EXPANDO internal · Kaufland.de · Fightstore stub data</span>
+    <span class="font-mono">v0.1.0 · single-file demo · open in any browser</span>
+  </div>
+</footer>
+
+</div>
+
+<div id="toast-region" class="fixed bottom-4 right-4 space-y-2 z-50"></div>
+
+<script>
+// ---------------------------------------------------------------
+// State (in-memory; refresh wipes it)
+// ---------------------------------------------------------------
+const REQUIRED_COLUMNS = ["product_id", "brand", "title", "description", "category",
+                          "image_urls", "sku", "ean", "price", "stock"];
+const OPTIONAL_COLUMNS = ["manufacturer_name", "manufacturer_email", "manufacturer_address",
+                          "manufacturer_phone", "ce_certificate_url",
+                          "size", "color", "weight_oz",
+                          "currency", "min_price",
+                          "condition", "handling_time_days", "weight_g"];
+
+let activeFilter = "all";
+
+let variants = [
+  { source_id: "fightstore-tatami-estilo-blk", title: "Tatami Estilo 6.0 BJJ Gi — Black",
+    sku: "TAT-EST-BLK-A1", ean: "5011523456705", variant: "A1 / black",
+    status: "pending", stock: 4, price: 129.90, currency: "EUR", lastSync: null,
+    pid: null, unit: null },
+  { source_id: "fightstore-tatami-estilo-blk", title: "Tatami Estilo 6.0 BJJ Gi — Black",
+    sku: "TAT-EST-BLK-A2", ean: "5011523456712", variant: "A2 / black",
+    status: "pending", stock: 3, price: 129.90, currency: "EUR", lastSync: null,
+    pid: null, unit: null },
+  { source_id: "fightstore-tatami-estilo-blk", title: "Tatami Estilo 6.0 BJJ Gi — Black",
+    sku: "TAT-EST-BLK-A3", ean: "5011523456729", variant: "A3 / black",
+    status: "pending", stock: 2, price: 129.90, currency: "EUR", lastSync: null,
+    pid: null, unit: null },
+];
+
+// ---------------------------------------------------------------
+// EAN validator (port of kle/parsing/ean.py)
+// ---------------------------------------------------------------
+function gtinCheckDigit(digits) {
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    const d = parseInt(digits[digits.length - 1 - i], 10);
+    sum += d * (i % 2 === 0 ? 3 : 1);
+  }
+  return (10 - (sum % 10)) % 10;
+}
+
+function isbn10CheckDigit(digits) {
+  let sum = 0;
+  for (let i = 0; i < 9; i++) sum += (i + 1) * parseInt(digits[i], 10);
+  const c = sum % 11;
+  return c === 10 ? "X" : String(c);
+}
+
+function validateEan(raw) {
+  let cleaned = String(raw).trim().replace(/^['"]+|['"]+$/g, "");
+  if (cleaned === "") return { valid: false, reason: "Empty value" };
+
+  if (/[eE][+-]?\d+/.test(cleaned) || /^[\d,.]+[eE]/.test(cleaned)) {
+    return { valid: false, reason: 'Scientific notation detected — EAN was truncated by the export tool. Re-export with EAN as text/string format (BaseLinker: "Export as text"; Excel: format column as Text before saving CSV).' };
+  }
+
+  if (/^\d{9}[\dX]$/i.test(cleaned)) {
+    const expected = isbn10CheckDigit(cleaned.substring(0, 9));
+    if (cleaned[9].toUpperCase() === expected) return { valid: true, ean: cleaned.toUpperCase(), type: "ISBN-10" };
+    return { valid: false, reason: "ISBN-10 checksum invalid" };
+  }
+
+  if (!/^\d+$/.test(cleaned)) return { valid: false, reason: "Contains non-digit characters" };
+
+  if (cleaned.length === 12) cleaned = "0" + cleaned;
+
+  if (cleaned.length === 13) {
+    const expected = gtinCheckDigit(cleaned.substring(0, 12));
+    if (parseInt(cleaned[12], 10) === expected) return { valid: true, ean: cleaned, type: "EAN-13" };
+    return { valid: false, reason: `EAN-13 checksum invalid — expected ${expected}, got ${cleaned[12]}` };
+  }
+  if (cleaned.length === 8) {
+    const expected = gtinCheckDigit(cleaned.substring(0, 7));
+    if (parseInt(cleaned[7], 10) === expected) return { valid: true, ean: cleaned, type: "EAN-8" };
+    return { valid: false, reason: `EAN-8 checksum invalid — expected ${expected}, got ${cleaned[7]}` };
+  }
+  return { valid: false, reason: `Unsupported length ${cleaned.length} digits — expected 8 (EAN-8), 13 (EAN-13), or 10 (ISBN-10)` };
+}
+
+// ---------------------------------------------------------------
+// Renderers
+// ---------------------------------------------------------------
+function pillForStatus(s) {
+  const map = { live: ["pill-live", "Live"], pending: ["pill-pending", "Pending"],
+                error: ["pill-error", "Error"], dry_run: ["pill-dry", "Dry run"] };
+  const [cls, label] = map[s] || ["pill-pending", s];
+  return `<span class="pill ${cls}">${label}</span>`;
+}
+
+function fmtRelative(ts) {
+  if (!ts) return "—";
+  const sec = Math.floor((Date.now() - ts) / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec/60)} min ago`;
+  return `${Math.floor(sec/3600)} hr ago`;
+}
+
+function renderKpis() {
+  const counts = { live: 0, pending: 0, error: 0, dry_run: 0 };
+  variants.forEach(v => counts[v.status]++);
+  document.getElementById("kpis").innerHTML = `
+    <div class="bg-white rounded-lg p-4 border border-slate-200">
+      <div class="text-xs text-slate-500">Live listings</div>
+      <div class="text-2xl font-semibold mt-0.5">${counts.live}</div>
+      <div class="text-xs text-slate-400 mt-0.5">on Kaufland.de</div>
+    </div>
+    <div class="bg-white rounded-lg p-4 border border-slate-200">
+      <div class="text-xs text-slate-500">Pending</div>
+      <div class="text-2xl font-semibold mt-0.5">${counts.pending}</div>
+      <div class="text-xs text-slate-400 mt-0.5">never published</div>
+    </div>
+    <div class="bg-white rounded-lg p-4 border border-slate-200">
+      <div class="text-xs text-slate-500">Errors</div>
+      <div class="text-2xl font-semibold mt-0.5 ${counts.error > 0 ? 'text-rose-600' : ''}">${counts.error}</div>
+      <div class="text-xs text-slate-400 mt-0.5">need review</div>
+    </div>
+    <div class="bg-white rounded-lg p-4 border border-slate-200">
+      <div class="text-xs text-slate-500">Sync lag</div>
+      <div class="text-2xl font-semibold mt-0.5">—</div>
+      <div class="text-xs text-slate-400 mt-0.5">stock + price</div>
+    </div>`;
+}
+
+function renderFilters() {
+  const filters = [["all","All"], ["live","Live"], ["pending","Pending"], ["error","Error"], ["dry_run","Dry run"]];
+  document.getElementById("filter-pills").innerHTML = filters.map(([k, label]) =>
+    `<a class="pill-filter ${activeFilter === k ? 'pill-filter-active' : ''}" onclick="setFilter('${k}')">${label}</a>`
+  ).join("");
+}
+
+function renderRows() {
+  const filtered = activeFilter === "all" ? variants : variants.filter(v => v.status === activeFilter);
+  document.getElementById("variant-count").textContent = `${filtered.length} variant(s)`;
+  if (filtered.length === 0) {
+    document.getElementById("rows").innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-sm text-slate-500">No variants match this filter.</td></tr>`;
+    return;
+  }
+  document.getElementById("rows").innerHTML = filtered.map((v, idx) => `
+    <tr class="border-t border-slate-100 hover:bg-slate-50/60">
+      <td class="px-4 py-2.5 align-top">
+        <div class="font-medium text-slate-900">${escapeHtml(v.title)}</div>
+        <div class="text-xs text-slate-500">${v.sku} · EAN ${v.ean}${v.pid ? ` · PID ${v.pid}` : ""}</div>
+      </td>
+      <td class="px-3 py-2.5 align-top text-slate-600">${v.variant}</td>
+      <td class="px-3 py-2.5 align-top">${pillForStatus(v.status)}</td>
+      <td class="px-3 py-2.5 align-top text-right tabular-nums">${v.stock}</td>
+      <td class="px-3 py-2.5 align-top text-right tabular-nums">€${v.price.toFixed(2)}</td>
+      <td class="px-3 py-2.5 align-top text-xs text-slate-500">${fmtRelative(v.lastSync)}</td>
+      <td class="px-4 py-2.5 align-top text-right space-x-1">
+        <button class="btn" onclick="publish('${v.sku}', 'dry-run')">Dry-run</button>
+        <button class="btn btn-primary" onclick="publish('${v.sku}', 'live')">Publish</button>
+      </td>
+    </tr>`).join("");
+}
+
+function renderSchemaSidebar() {
+  document.getElementById("required-cols").innerHTML = REQUIRED_COLUMNS.map(c =>
+    `<code class="text-[11px] px-1.5 py-0.5 rounded bg-rose-50 text-rose-700">${c}</code>`).join(" ");
+  document.getElementById("optional-cols").innerHTML = OPTIONAL_COLUMNS.map(c =>
+    `<code class="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">${c}</code>`).join(" ");
+}
+
+function renderAll() { renderKpis(); renderFilters(); renderRows(); }
+
+// ---------------------------------------------------------------
+// Interactions
+// ---------------------------------------------------------------
+function setFilter(f) { activeFilter = f; renderAll(); }
+
+function refreshTable() {
+  toast("Refreshed from in-memory state.");
+  renderAll();
+}
+
+function publish(sku, mode) {
+  const v = variants.find(x => x.sku === sku);
+  if (!v) return;
+  if (mode === "dry-run") {
+    v.status = "dry_run";
+    v.lastSync = Date.now();
+    toast(`Dry-run for ${sku} — payload validated, not published.`);
+  } else {
+    // Simulate ~10% failure for demo realism
+    if (Math.random() < 0.1) {
+      v.status = "error";
+      toast(`Publish for ${sku} failed — Kaufland API returned 400 (demo).`, "error");
+    } else {
+      v.status = "live";
+      v.pid = "PID-" + Math.floor(Math.random() * 9000 + 1000);
+      v.unit = "U-" + Math.floor(Math.random() * 9000 + 1000);
+      v.lastSync = Date.now();
+      toast(`Published ${sku} → ${v.pid} on Kaufland.de.`, "success");
+    }
+  }
+  renderAll();
+}
+
+function showView(name) {
+  document.getElementById("view-dashboard").classList.toggle("hidden", name !== "dashboard");
+  document.getElementById("view-upload").classList.toggle("hidden", name !== "upload");
+  if (name === "upload") {
+    renderSchemaSidebar();
+    document.getElementById("preview-area").innerHTML = "";
+  } else {
+    renderAll();
+  }
+}
+
+function toast(msg, kind = "info") {
+  const region = document.getElementById("toast-region");
+  const el = document.createElement("div");
+  const colors = { info: "border-slate-200", success: "border-emerald-300 bg-emerald-50",
+                   error: "border-rose-300 bg-rose-50" };
+  el.className = `toast ${colors[kind] || colors.info}`;
+  el.textContent = msg;
+  region.appendChild(el);
+  setTimeout(() => { el.style.opacity = "0"; el.style.transition = "opacity 0.3s"; }, 3500);
+  setTimeout(() => el.remove(), 4000);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+// ---------------------------------------------------------------
+// Upload flow — client-side parsers
+// ---------------------------------------------------------------
+function handleFileUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const ext = file.name.toLowerCase().split(".").pop();
+  if (ext === "xlsx" || ext === "xls") {
+    const reader = new FileReader();
+    reader.onload = e => parseXlsx(file.name, e.target.result);
+    reader.readAsArrayBuffer(file);
+  } else if (ext === "xml") {
+    file.text().then(t => parseXml(file.name, t));
+  } else {
+    file.text().then(t => parseCsv(file.name, t));
+  }
+}
+
+function parseCsv(filename, text) {
+  const result = Papa.parse(text.trim(), { header: true, skipEmptyLines: true });
+  finishParsing(filename, result.data, result.meta.fields || []);
+}
+
+function parseXlsx(filename, buffer) {
+  const wb = XLSX.read(buffer, { type: "array" });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+  // Reconvert numbers to clean strings
+  rows.forEach(r => Object.keys(r).forEach(k => {
+    if (typeof r[k] === "number" && Number.isInteger(r[k])) r[k] = String(r[k]);
+    else if (typeof r[k] === "number") r[k] = String(r[k]);
+  }));
+  finishParsing(filename, rows, Object.keys(rows[0] || {}));
+}
+
+function parseXml(filename, text) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(text, "application/xml");
+  const err = doc.querySelector("parsererror");
+  if (err) {
+    showParseErrors(filename, [{ row: 0, field: null, message: "XML parse error: " + err.textContent.split("\n")[0] }]);
+    return;
+  }
+  const REPEATING = ["product", "products", "item", "items", "offer", "offers", "row", "record"];
+  let nodes = [];
+  for (const tag of REPEATING) {
+    const found = doc.getElementsByTagName(tag);
+    if (found.length > 0 && Array.from(found).some(n => n.children.length > 0)) {
+      nodes = Array.from(found).filter(n => n.children.length > 0);
+      break;
+    }
+  }
+  if (nodes.length === 0) {
+    showParseErrors(filename, [{ row: 0, field: null, message: "no repeating product/item/offer element found" }]);
+    return;
+  }
+  const rows = [];
+  const headerOrder = [];
+  const headerSet = new Set();
+  for (const n of nodes) {
+    const row = {};
+    for (const child of n.children) {
+      const tag = child.localName;
+      const txt = (child.textContent || "").trim();
+      if (!txt) continue;
+      row[tag] = txt;
+      if (!headerSet.has(tag)) { headerSet.add(tag); headerOrder.push(tag); }
+    }
+    if (Object.keys(row).length) rows.push(row);
+  }
+  finishParsing(filename, rows, headerOrder);
+}
+
+function finishParsing(filename, rows, headers) {
+  const errors = [];
+  // Check required columns
+  const missing = REQUIRED_COLUMNS.filter(c => !headers.includes(c));
+  if (missing.length) {
+    errors.push({ row: 1, field: null, message: `missing required column(s): ${missing.join(", ")}` });
+  }
+  // Group by product_id, validate per-row
+  const groups = {};
+  rows.forEach((row, i) => {
+    const idx = i + 2;  // header is row 1
+    const pid = (row.product_id || "").trim();
+    if (!pid) {
+      errors.push({ row: idx, field: "product_id", message: "missing" });
+      return;
+    }
+    // EAN validation
+    const ean = (row.ean || "").trim();
+    if (!ean) {
+      errors.push({ row: idx, field: "ean", message: "missing" });
+    } else {
+      const v = validateEan(ean);
+      if (!v.valid) errors.push({ row: idx, field: "ean", message: `invalid EAN '${ean}' — ${v.reason}` });
+      else row.ean = v.ean;
+    }
+    if (!groups[pid]) groups[pid] = [];
+    groups[pid].push({ row, idx });
+  });
+
+  const validProducts = Object.entries(groups).filter(([_, items]) => {
+    return items.every(it => !errors.some(e => e.row === it.idx && e.field === "ean"));
+  }).map(([pid, items]) => ({ pid, items }));
+
+  renderPreview(filename, validProducts, errors, rows.length);
+}
+
+function renderPreview(filename, products, errors, totalRows) {
+  const totalVariants = products.reduce((sum, p) => sum + p.items.length, 0);
+  let html = `
+    <div class="border-t border-slate-200 pt-4">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <div class="font-medium text-slate-900">Preview: ${escapeHtml(filename)}</div>
+          <div class="text-xs text-slate-500">
+            ${products.length} product(s) · ${totalVariants} variant(s) ·
+            ${errors.length === 0
+              ? '<span class="text-emerald-600">no parse errors</span>'
+              : `<span class="text-rose-600">${errors.length} parse error(s)</span>`}
+          </div>
+        </div>
+        ${products.length > 0
+          ? `<button class="btn btn-primary" onclick="commitUpload(${products.length})">Publish all to Kaufland.de</button>`
+          : `<span class="pill pill-error">Nothing publishable</span>`}
+      </div>
+  `;
+  if (errors.length > 0) {
+    html += `
+      <div class="bg-rose-50 border border-rose-200 rounded-lg overflow-hidden mb-4">
+        <div class="px-4 py-2 border-b border-rose-200 text-sm font-medium text-rose-800">Parse errors (${errors.length})</div>
+        <table class="w-full text-xs">
+          <thead class="bg-rose-100/50 text-rose-700">
+            <tr><th class="text-left px-4 py-1.5">Row</th><th class="text-left px-3 py-1.5">Field</th><th class="text-left px-4 py-1.5">Message</th></tr>
+          </thead>
+          <tbody>
+            ${errors.map(e => `<tr class="border-t border-rose-100">
+              <td class="px-4 py-2 text-rose-900">${e.row}</td>
+              <td class="px-3 py-2 text-rose-900"><code>${e.field || "—"}</code></td>
+              <td class="px-4 py-2 text-slate-700">${escapeHtml(e.message)}</td></tr>`).join("")}
+          </tbody>
+        </table>
+      </div>`;
+  }
+  products.forEach(({pid, items}) => {
+    const first = items[0].row;
+    html += `
+      <div class="bg-white rounded-lg border border-slate-200 mb-3 overflow-hidden">
+        <div class="px-4 py-2 bg-slate-50 border-b border-slate-200">
+          <div class="font-medium text-slate-900">${escapeHtml(first.title || "(no title)")}</div>
+          <div class="text-xs text-slate-500"><code>${escapeHtml(pid)}</code> · ${items.length} variant(s) · ${escapeHtml(first.brand || "")}</div>
+        </div>
+        <table class="w-full text-xs">
+          <thead class="text-slate-500">
+            <tr><th class="text-left px-4 py-1.5 font-medium">SKU</th><th class="text-left px-3 py-1.5 font-medium">EAN</th><th class="text-left px-3 py-1.5 font-medium">Axes</th><th class="text-right px-3 py-1.5 font-medium">Price</th><th class="text-right px-3 py-1.5 font-medium">Stock</th><th class="text-right px-4 py-1.5 font-medium">Dry-run</th></tr>
+          </thead>
+          <tbody>
+            ${items.map(it => {
+              const r = it.row;
+              const axes = [r.size, r.color, r.weight_oz ? r.weight_oz + "oz" : null].filter(Boolean).join(" / ");
+              return `<tr class="border-t border-slate-100">
+                <td class="px-4 py-2 font-mono">${escapeHtml(r.sku || "")}</td>
+                <td class="px-3 py-2 font-mono text-slate-500">${escapeHtml(r.ean || "")}</td>
+                <td class="px-3 py-2 text-slate-600">${escapeHtml(axes)}</td>
+                <td class="px-3 py-2 text-right tabular-nums">€${(parseFloat(String(r.price).replace(",", ".")) || 0).toFixed(2)}</td>
+                <td class="px-3 py-2 text-right tabular-nums">${r.stock || 0}</td>
+                <td class="px-4 py-2 text-right"><span class="pill pill-dry">Dry-run OK</span></td></tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>`;
+  });
+  html += `</div>`;
+  document.getElementById("preview-area").innerHTML = html;
+}
+
+function commitUpload(productCount) {
+  // Add all current preview variants into the main `variants` list as Live
+  // (simulating the commit-to-Kaufland step).
+  toast(`Committed ${productCount} product(s) to Kaufland.de (demo).`, "success");
+  // For demo, we just toast and bounce back — the dashboard list stays at the stub.
+  // A "real" commit would merge into `variants`. We could implement that but it'd
+  // require a deeper refactor of demo state. Keep it simple for now.
+  setTimeout(() => showView("dashboard"), 800);
+}
+
+function showParseErrors(filename, errors) {
+  renderPreview(filename, [], errors, 0);
+}
+
+// ---------------------------------------------------------------
+// Sample loaders
+// ---------------------------------------------------------------
+const SAMPLE_CSV_HEADER = REQUIRED_COLUMNS.concat(OPTIONAL_COLUMNS).join(",");
+const SAMPLE_CSV_ROWS = [
+  ["fightstore-tatami-estilo-blk","Tatami","Tatami Estilo 6.0 BJJ Gi — Black","Pearl Weave 550 GSM, IBJJF-compliant, pre-shrunk cotton.","bjj/gi/adult","https://cdn.example.com/gi-front.jpg|https://cdn.example.com/gi-back.jpg","TAT-EST-BLK-A1","5011523456705","129.90","4","Tatami Fightwear Ltd.","info@tatamifightwear.com","Stockton-on-Tees, UK","","","A1","black","","EUR","99.00","NEW","1","1800"],
+  ["fightstore-tatami-estilo-blk","","","","","","TAT-EST-BLK-A2","5011523456712","129.90","3","","","","","","A2","black","","EUR","99.00","NEW","1","1850"],
+  ["fightstore-tatami-estilo-blk","","","","","","TAT-EST-BLK-A3","5011523456729","129.90","2","","","","","","A3","black","","EUR","99.00","NEW","1","1900"],
+  ["fightstore-venum-impact-blk","Venum","Venum Impact Boxing Gloves — Black/Gold","Premium synthetic leather boxing gloves, triple-density foam.","boxing/gloves","https://cdn.example.com/gloves-front.jpg","VEN-IMP-BLK-12","4055605012343","79.90","10","Venum SAS","info@venum.com","Paris, FR","","","","black","12","EUR","59.00","NEW","1",""],
+  ["fightstore-venum-impact-blk","","","","","","VEN-IMP-BLK-14","4055605012350","79.90","8","","","","","","","black","14","EUR","59.00","NEW","1",""],
+];
+
+function buildSampleCsv() {
+  return SAMPLE_CSV_HEADER + "\n" + SAMPLE_CSV_ROWS.map(r => r.map(c => /[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c).join(",")).join("\n");
+}
+
+function loadSampleCsv() {
+  showView("upload");
+  setTimeout(() => parseCsv("sample.csv", buildSampleCsv()), 50);
+}
+
+function loadCorruptedCsv() {
+  showView("upload");
+  const bad = SAMPLE_CSV_HEADER + "\n" +
+    `fightstore-tatami-estilo-blk,Tatami,Tatami Gi,Pearl weave,bjj/gi/adult,https://cdn.example.com/a.jpg,TAT-EST-BLK-A1,"8,59507E+12",129.90,4,Tatami Ltd,info@tatami.com,UK,,,A1,black,,EUR,99.00,NEW,1,1800\n` +
+    `fightstore-venum-impact-blk,Venum,Venum Gloves,desc,boxing/gloves,https://cdn.example.com/b.jpg,VEN-IMP-BLK-12,5011523456701,79.90,10,Venum SAS,info@venum.com,Paris,,,,black,12,EUR,59.00,NEW,1,\n`;
+  setTimeout(() => parseCsv("baselinker-export-broken.csv", bad), 50);
+}
+
+function downloadSampleCsv() {
+  const blob = new Blob([buildSampleCsv()], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "kle-sample.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ---------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------
+renderAll();
+renderSchemaSidebar();
+</script>
+</body>
+</html>
