@@ -69,14 +69,14 @@
       <div class="font-medium text-sm text-slate-900">Try a broken BaseLinker export</div>
       <div class="text-xs text-slate-500 mt-0.5">Scientific notation + bad checksum → exact error messages, not "invalid 13 digits".</div>
     </button>
-    <button onclick="document.getElementById('view-dashboard').scrollIntoView({behavior:'smooth'})"
-            class="text-left p-3 rounded-lg border border-slate-200 hover:border-slate-400 hover:bg-slate-50 transition">
-      <div class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-slate-500 mb-1">
-        <span class="w-5 h-5 rounded-full bg-slate-900 text-white flex items-center justify-center text-[10px] font-semibold">3</span>
-        Publish flow
+    <button onclick="loadBannedCsv()"
+            class="text-left p-3 rounded-lg border border-rose-200 hover:border-rose-400 hover:bg-rose-50 transition">
+      <div class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-rose-700 mb-1">
+        <span class="w-5 h-5 rounded-full bg-rose-600 text-white flex items-center justify-center text-[10px] font-semibold">3</span>
+        Compliance audit
       </div>
-      <div class="font-medium text-sm text-slate-900">Click Publish on a row</div>
-      <div class="text-xs text-slate-500 mt-0.5">Watch KPI tiles update, PID + unit ID populate. ~10% simulated failure rate.</div>
+      <div class="font-medium text-sm text-slate-900">Try a non-compliant listing</div>
+      <div class="text-xs text-slate-500 mt-0.5">Medical claims + mystery box + replica → 5-layer audit catches each one with code &amp; suggestion.</div>
     </button>
   </div>
 </section>
@@ -166,6 +166,7 @@
         <div class="border-t border-slate-200 pt-3 mt-4">
           <button class="btn" onclick="downloadSampleCsv()">⬇ Download sample CSV</button>
           <button class="btn ml-2" onclick="loadCorruptedCsv()">Try a broken EAN export</button>
+          <button class="btn ml-2" onclick="loadBannedCsv()">Try a non-compliant listing</button>
         </div>
 
         <div id="preview-area" class="mt-6"></div>
@@ -287,6 +288,245 @@ function validateEan(raw) {
     return { valid: false, reason: `EAN-8 checksum invalid — expected ${expected}, got ${cleaned[7]}` };
   }
   return { valid: false, reason: `Unsupported length ${cleaned.length} digits — expected 8 (EAN-8), 13 (EAN-13), or 10 (ISBN-10)` };
+}
+
+
+// ---------------------------------------------------------------
+// COMPLIANCE_INJECTED -- 5-layer pre-publish audit
+// Ported from kle/compliance/ (Python). Same rules, same severities.
+// ---------------------------------------------------------------
+
+const Severity = Object.freeze({
+  PASS: 0, INFO: 1, WARN: 2, FAIL: 3, BLOCKED: 4,
+  label: s => ({0:"OK",1:"Info",2:"Warn",3:"Fail",4:"Blocked"})[s],
+  cssClass: s => ({0:"pill-live",1:"pill-pending",2:"pill-dry",3:"pill-error",4:"pill-error"})[s],
+});
+
+function newAudit() {
+  return { issues: [], detectedCategory: null, detectionConfidence: 0 };
+}
+function add(audit, code, sev, layer, message, suggestion) {
+  audit.issues.push({ code, severity: sev, layer, message, suggestion });
+}
+function auditSeverity(a) {
+  return a.issues.reduce((m, i) => Math.max(m, i.severity), Severity.PASS);
+}
+function isBlocked(a) {
+  return a.issues.some(i => i.severity === Severity.BLOCKED);
+}
+
+// ─── Layer 1 — universal text ─────────────────────────────────────
+const RX_ALLCAPS = /\b[A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽÄÖÜß]{4,}\b/g;
+const PROMO_TERMS = ["SALE","AKCE","ZĽAVA","ZLAVA","RABATT","PROMO","BLACK FRIDAY","CYBER MONDAY","TOP","BESTSELLER","NEW","NOVÉ","NEU"];
+const RX_SYMBOLS = /[★☆♥♡✓✔✨⚡🔥💯❤️]/;
+const RX_URL = /(?:https?:\/\/[^\s,;)]+|(?<![A-Za-z0-9])[a-z0-9-]+\.(?:com|de|cz|sk|pl|at|eu|net)(?:\/[^\s]*)?)/i;
+const RX_PCT = /(?:^|\s)[-]?\d{1,3}\s*%(?:\s|$|\sOFF|\sSLEVA)/i;
+
+function checkText(audit, title, description) {
+  const layer = "universal_text";
+  // Title
+  if (!title) {
+    add(audit, "TXT_TITLE_MISSING", Severity.FAIL, layer, "Product title is empty.");
+  } else {
+    const n = title.length;
+    if (n > 250) add(audit, "TXT_TITLE_TOO_LONG", Severity.FAIL, layer, `Title is ${n} chars; Kaufland's hard limit is 250.`);
+    else if (n > 80) add(audit, "TXT_TITLE_LONG", Severity.INFO, layer, `Title is ${n} chars; tiles truncate at ~80.`);
+    const caps = title.match(RX_ALLCAPS) || [];
+    if (caps.length >= 2) add(audit, "TXT_TITLE_ALLCAPS", Severity.WARN, layer, `ALL-CAPS words in title: ${caps.slice(0,5).join(", ")}.`);
+    for (const t of PROMO_TERMS) {
+      if (new RegExp(`\\b${t}\\b`, "i").test(title)) {
+        add(audit, "TXT_TITLE_PROMO_TERM", Severity.WARN, layer, `Title contains promo term '${t}'.`);
+        break;
+      }
+    }
+    if (RX_PCT.test(title)) add(audit, "TXT_TITLE_PERCENT", Severity.WARN, layer, "Title contains a percentage discount.");
+    if (RX_SYMBOLS.test(title)) add(audit, "TXT_TITLE_SYMBOLS", Severity.WARN, layer, "Title contains decorative symbols (★ ♥).");
+    if (RX_URL.test(title)) add(audit, "TXT_TITLE_URL", Severity.FAIL, layer, "Title contains a URL.");
+  }
+  // Description
+  if (!description) {
+    add(audit, "TXT_DESC_MISSING", Severity.FAIL, layer, "Product description is empty.");
+  } else {
+    const n = description.length;
+    if (n > 5000) add(audit, "TXT_DESC_TOO_LONG", Severity.FAIL, layer, `Description is ${n} chars; hard limit is 5000.`);
+    else if (n < 100) add(audit, "TXT_DESC_SHORT", Severity.INFO, layer, `Description is only ${n} chars; recommended minimum is 100.`);
+    if (RX_URL.test(description)) add(audit, "TXT_DESC_URL", Severity.WARN, layer, "Description contains a URL.");
+  }
+}
+
+// ─── Layer 2 — claims ─────────────────────────────────────────────
+const RX_MEDICAL = /\b(heals?|cures?|treats?|prevents?|léčí|vyléčí|heilt|lindert|verhindert|diabetes|cancer|krebs|rakovina|alzheimer|arthritis|arthrose)\b/i;
+const RX_WL = /(?:lose|shed|drop|abnehmen|zhubnete?)\s+(?:up\s+to\s+)?\d+\s*(kg|lb|pounds?|kilos?)/i;
+const RX_COVID = /\b(coronavirus|covid[-\s]?19|sars[-\s]?cov[-\s]?2|covid)\b/i;
+const RX_NATURAL = /\b(100\s*%\s*(natural|naturlich)|organic|bio|öko)\b/i;
+const RX_HAS_CERT = /\b(certified|certifikováno|certifikat|bio-zertifikat|eu-bio|de-öko|usda|cosmos|natrue)\b/i;
+const RX_CRUELTY = /\b(cruelty[-\s]?free|leaping\s+bunny|nicht\s+an\s+tieren)\b/i;
+const SUPERLATIVES = ["best","fastest","cheapest","strongest","lightest","nejlepší","nejrychlejší","nejlevnější","beste","schnellste","billigste"];
+
+function checkClaims(audit, title, description) {
+  const layer = "universal_claims";
+  function checkOne(label, text) {
+    if (!text) return;
+    if (RX_MEDICAL.test(text))     add(audit, "CLAIM_MEDICAL", Severity.BLOCKED, layer, `${label} contains medical/disease claim language.`, "Disease cure/treatment claims are prohibited (DE HWG, MPG).");
+    if (RX_WL.test(text))          add(audit, "CLAIM_WEIGHT_LOSS", Severity.BLOCKED, layer, `${label} contains a quantified weight-loss claim.`, "Prohibited by EU HCR 1924/2006 Art. 12.");
+    if (RX_COVID.test(text))       add(audit, "CLAIM_CORONAVIRUS", Severity.BLOCKED, layer, `${label} mentions coronavirus/COVID-19.`, "Not permitted on Kaufland (BfArM stance).");
+    if (RX_NATURAL.test(text) && !RX_HAS_CERT.test(text)) add(audit, "CLAIM_NATURAL_UNCERTIFIED", Severity.WARN, layer, `${label} claims 'natural'/'organic' but no certification is referenced.`);
+    if (RX_CRUELTY.test(text))     add(audit, "CLAIM_CRUELTY_FREE", Severity.WARN, layer, `${label} claims 'cruelty-free'.`);
+    const sup = SUPERLATIVES.filter(w => new RegExp(`\\b${w}\\b`, "i").test(text));
+    if (sup.length) add(audit, "CLAIM_SUPERLATIVE", Severity.INFO, layer, `${label} contains superlative(s): ${[...new Set(sup)].slice(0,3).join(", ")}.`);
+  }
+  checkOne("Title", title);
+  checkOne("Description", description);
+}
+
+// ─── Layer 3 — banned items ───────────────────────────────────────
+const BANNED_RULES = [
+  ["BAN_MYSTERY_BOX", Severity.BLOCKED, /\b(mystery|blind|surprise)\s+box(es)?\b|überraschungsbox/i, "Mystery/blind boxes not permitted on Kaufland."],
+  ["BAN_FIREWORKS",   Severity.BLOCKED, /\b(firework|pyrotechnic|feuerwerk|petarda)/i, "Fireworks/pyrotechnics are banned (BfV/category 3+)."],
+  ["BAN_WEAPONS",     Severity.BLOCKED, /\b(firearm|schreckschusswaffe|pepper\s+spray|taser|crossbow|cs[-\s]?gas)\b|\b(real|live)\s+(gun|pistol|rifle|shotgun)\b/i, "Real weapons, tasers, pepper spray are banned."],
+  ["BAN_DRUGS",       Severity.BLOCKED, /\b(cocaine|heroin|methamphetamine|lsd|mdma|ecstasy)\b/i, "Narcotics/controlled substances banned (BtMG)."],
+  ["BAN_LICENSE_KEYS",Severity.BLOCKED, /\b(license|product|activation)\s+key(s)?\b|\bsteam\s+(key|code)\b|\bcd[-\s]?key/i, "Standalone software license keys / digital codes not permitted."],
+  ["BAN_REPLICAS",    Severity.BLOCKED, /\breplica\s+(rolex|gucci|nike|adidas|louis\s+vuitton|chanel|prada|hermes)\b|\bfake\s+(rolex|gucci|nike|adidas)\b/i, "Branded replicas are banned (UWG, trademark)."],
+  ["BAN_FUR",         Severity.BLOCKED, /\b(real|genuine|natural)\s+fur\b|\b(mink|chinchilla|fox|raccoon\s+dog)\s+fur\b|echtpelz/i, "Real fur products are banned (animal welfare)."],
+  ["BAN_PROTECTED",   Severity.BLOCKED, /\b(ivory|elephant\s+tusk|rhino\s+horn|tiger\s+bone)\b|elfenbein/i, "CITES-protected species materials are illegal."],
+  ["BAN_LIVE_ANIMALS",Severity.BLOCKED, /\blive\s+(animal|fish|bird|reptile)s?\b/i, "Live animals cannot be sold on the marketplace."],
+];
+
+function checkBanned(audit, title, description, brand) {
+  const layer = "banned_items";
+  const hay = `${title} ${description} ${brand || ""}`;
+  if (!hay.trim()) return;
+  for (const [code, sev, rx, sugg] of BANNED_RULES) {
+    const m = rx.exec(hay);
+    if (m) add(audit, code, sev, layer, `Matched banned-item pattern: '${m[0]}'.`, sugg);
+  }
+}
+
+// ─── Layer 4 — category detection ─────────────────────────────────
+const CATEGORY_KEYWORDS = {
+  "combat-sports": {
+    high: ["bjj","brazilian jiu","jiu-jitsu","jiujitsu","mma","gi","kimono","rashguard","rash guard","boxing","muay thai","kickbox","fightwear","fight shorts","no-gi","nogi"],
+    medium: ["gloves","shin guard","mouthguard","mouth guard","headgear","wraps","hand wraps","punching bag","heavy bag","focus mitt","thai pad","shorts"],
+    low: ["combat","fighter","training","sparring"],
+  },
+  electronics: {
+    high: ["smartphone","tablet","laptop","headphones","earbuds","smartwatch","monitor","router","ssd","hdd"],
+    medium: ["charger","cable","battery","wireless","bluetooth","usb-c","hdmi"],
+    low: ["electronic","digital"],
+  },
+  fashion: {
+    high: ["dress","jeans","t-shirt","tshirt","hoodie","sweater","jacket","coat","skirt","blouse","sneaker","trainers"],
+    medium: ["cotton","wool","polyester","leather","denim"],
+    low: ["fashion","apparel","clothing"],
+  },
+  "home-garden": {
+    high: ["cookware","pan","saucepan","pot","vacuum cleaner","lawn mower","garden hose","barbecue","grill"],
+    medium: ["kitchen","bathroom","bedroom","garden"],
+    low: ["home","household"],
+  },
+  "books-media": {
+    high: ["isbn","paperback","hardcover","audiobook","novel","biography","textbook"],
+    medium: ["author","publisher","edition"],
+    low: ["book","story"],
+  },
+  beauty: {
+    high: ["shampoo","conditioner","lipstick","mascara","foundation","moisturizer","serum","fragrance","perfume","eau de toilette"],
+    medium: ["cosmetic","skincare","anti-aging"],
+    low: ["beauty"],
+  },
+};
+const TIER_W = { high: 5, medium: 2, low: 1 };
+const DETECT_THRESHOLD = 0.15;
+
+function scoreText(text, boost) {
+  const out = {};
+  for (const cat in CATEGORY_KEYWORDS) out[cat] = 0;
+  if (!text) return out;
+  const lower = text.toLowerCase();
+  const mult = boost ? 2 : 1;
+  for (const cat in CATEGORY_KEYWORDS) {
+    for (const tier in CATEGORY_KEYWORDS[cat]) {
+      const w = TIER_W[tier];
+      for (const word of CATEGORY_KEYWORDS[cat][tier]) {
+        if (new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(lower)) {
+          out[cat] += w * mult;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function detectCategory(audit, title, description) {
+  const ts = scoreText(title, true);
+  const ds = scoreText(description, false);
+  const combined = {};
+  let total = 0;
+  for (const cat in CATEGORY_KEYWORDS) {
+    combined[cat] = ts[cat] + ds[cat];
+    total += combined[cat];
+  }
+  if (total === 0) {
+    audit.detectedCategory = "uncategorized";
+    audit.detectionConfidence = 0;
+    add(audit, "CAT_UNCATEGORIZED", Severity.INFO, "category_detection", "Could not confidently auto-detect a top-level category.");
+    return;
+  }
+  let bestCat = null, bestRaw = -1;
+  for (const cat in combined) {
+    if (combined[cat] > bestRaw) { bestRaw = combined[cat]; bestCat = cat; }
+  }
+  const confidence = bestRaw / total;
+  if (confidence < DETECT_THRESHOLD) {
+    audit.detectedCategory = "uncategorized";
+    audit.detectionConfidence = Math.round(confidence * 1000) / 1000;
+    add(audit, "CAT_UNCATEGORIZED", Severity.INFO, "category_detection", `Category signals too weak (confidence ${(confidence*100).toFixed(0)}%).`);
+    return;
+  }
+  audit.detectedCategory = bestCat;
+  audit.detectionConfidence = Math.round(confidence * 1000) / 1000;
+  add(audit, "CAT_DETECTED", Severity.PASS, "category_detection", `Detected category: ${bestCat} (confidence ${(confidence*100).toFixed(0)}%).`);
+}
+
+// ─── Layer 5 — per-category (combat-sports) ───────────────────────
+const RX_OZ = /\b\d{1,2}\s*(?:oz|ounce|unze)\b/i;
+const RX_IBJJF = /\bibjjf\b/i;
+const RX_KIDS = /\b(kids|children|kinder|junior|youth|adolescent)\b/i;
+const RX_AGE = /\b(ages?|alter|von|from)\s*\d+\b/i;
+const RX_TR_WEAPON = /\b(training|practice|wooden|rubber)\s+(nunchaku|knife|sword|katana|bo\s+staff)\b/i;
+const RX_GI = /\b(gi|kimono)\b/i;
+const RX_GLOVES_ITEM = /\b(boxing|mma|kickbox)\s+gloves\b/i;
+
+function perCategoryCombat(audit, title, description) {
+  const layer = "per_category:combat-sports";
+  const combined = `${title} ${description}`;
+  const isGi = RX_GI.test(title);
+  const isGloves = RX_GLOVES_ITEM.test(title);
+  if (isGi && !RX_IBJJF.test(combined)) {
+    add(audit, "CAT_COMBAT_GI_NO_IBJJF_REF", Severity.WARN, layer, "BJJ gi listing does not mention IBJJF compliance.", "Add 'IBJJF approved' or 'training only / not IBJJF approved' so buyers can choose.");
+  }
+  if (isGloves && !RX_OZ.test(title)) {
+    add(audit, "CAT_COMBAT_GLOVES_NO_OZ", Severity.FAIL, layer, "Boxing/MMA gloves title must declare ounce weight (e.g. 12oz, 14oz).", "Add the ounce value to the title -- it's the primary buyer filter.");
+  }
+  if (RX_KIDS.test(combined) && !RX_AGE.test(combined)) {
+    add(audit, "CAT_COMBAT_KIDS_NO_AGE", Severity.WARN, layer, "Listing targets children/youth but no age range is given.", "Cite an age range (e.g. 'ages 6-10') so parents can pick the right size.");
+  }
+  if (RX_TR_WEAPON.test(combined)) {
+    add(audit, "CAT_COMBAT_TRAINING_WEAPON", Severity.WARN, layer, "Training weapon item -- review German WaffG / minor age restrictions.");
+  }
+}
+
+// ─── Orchestrator ─────────────────────────────────────────────────
+function runAudit(title, description, brand) {
+  const audit = newAudit();
+  checkText(audit, title, description);
+  checkClaims(audit, title, description);
+  checkBanned(audit, title, description, brand);
+  detectCategory(audit, title, description);
+  if (audit.detectedCategory === "combat-sports") {
+    perCategoryCombat(audit, title, description);
+  }
+  return audit;
 }
 
 // ---------------------------------------------------------------
@@ -540,11 +780,40 @@ function finishParsing(filename, rows, headers) {
     return items.every(it => !errors.some(e => e.row === it.idx && e.field === "ean"));
   }).map(([pid, items]) => ({ pid, items }));
 
+  // Run the 5-layer compliance audit per variant. The product's overall
+  // verdict is the max severity across its variants; a product with any
+  // BLOCKED variant cannot be published.
+  validProducts.forEach(p => {
+    const first = p.items[0].row;
+    p.audits = {};
+    p.items.forEach(it => {
+      p.audits[it.row.sku || ""] = runAudit(
+        first.title || "",
+        first.description || "",
+        first.brand || ""
+      );
+    });
+    p.blocked = Object.values(p.audits).some(a => isBlocked(a));
+  });
+
   renderPreview(filename, validProducts, errors, rows.length);
 }
 
 function renderPreview(filename, products, errors, totalRows) {
   const totalVariants = products.reduce((sum, p) => sum + p.items.length, 0);
+  const publishableProducts = products.filter(p => !p.blocked);
+  const publishableCount = publishableProducts.length;
+
+  // Aggregate audit verdicts across every variant in every product
+  let clean = 0, warned = 0, blocked = 0;
+  products.forEach(p => {
+    Object.values(p.audits || {}).forEach(a => {
+      if (isBlocked(a)) blocked++;
+      else if (a.issues.some(i => i.severity >= Severity.WARN)) warned++;
+      else clean++;
+    });
+  });
+
   let html = `
     <div class="border-t border-slate-200 pt-4">
       <div class="flex items-center justify-between mb-3">
@@ -557,11 +826,33 @@ function renderPreview(filename, products, errors, totalRows) {
               : `<span class="text-rose-600">${errors.length} parse error(s)</span>`}
           </div>
         </div>
-        ${products.length > 0
-          ? `<button class="btn btn-primary" onclick="commitUpload(${products.length})">Publish all to Kaufland.de</button>`
+        ${publishableCount > 0
+          ? `<button class="btn btn-primary" onclick="commitUpload(${publishableCount})">Publish ${publishableCount} product(s) to Kaufland.de</button>`
           : `<span class="pill pill-error">Nothing publishable</span>`}
       </div>
   `;
+
+  if (products.length > 0) {
+    html += `
+      <div class="grid grid-cols-3 gap-3 mb-4">
+        <div class="bg-white rounded-lg border border-slate-200 p-3">
+          <div class="text-xs text-slate-500">Clean</div>
+          <div class="text-xl font-semibold text-emerald-600">${clean}</div>
+          <div class="text-[11px] text-slate-400">no compliance issues</div>
+        </div>
+        <div class="bg-white rounded-lg border border-slate-200 p-3">
+          <div class="text-xs text-slate-500">Warnings</div>
+          <div class="text-xl font-semibold text-amber-600">${warned}</div>
+          <div class="text-[11px] text-slate-400">review before publish</div>
+        </div>
+        <div class="bg-white rounded-lg border border-slate-200 p-3">
+          <div class="text-xs text-slate-500">Blocked</div>
+          <div class="text-xl font-semibold text-rose-600">${blocked}</div>
+          <div class="text-[11px] text-slate-400">cannot publish until fixed</div>
+        </div>
+      </div>`;
+  }
+
   if (errors.length > 0) {
     html += `
       <div class="bg-rose-50 border border-rose-200 rounded-lg overflow-hidden mb-4">
@@ -579,34 +870,94 @@ function renderPreview(filename, products, errors, totalRows) {
         </table>
       </div>`;
   }
-  products.forEach(({pid, items}) => {
+
+  products.forEach(({pid, items, audits, blocked: prodBlocked}) => {
     const first = items[0].row;
+    const productBadge = prodBlocked
+      ? `<span class="pill pill-error">Audit blocked</span>`
+      : `<span class="pill pill-dry">Ready (dry-run OK)</span>`;
     html += `
-      <div class="bg-white rounded-lg border border-slate-200 mb-3 overflow-hidden">
-        <div class="px-4 py-2 bg-slate-50 border-b border-slate-200">
-          <div class="font-medium text-slate-900">${escapeHtml(first.title || "(no title)")}</div>
-          <div class="text-xs text-slate-500"><code>${escapeHtml(pid)}</code> · ${items.length} variant(s) · ${escapeHtml(first.brand || "")}</div>
+      <div class="bg-white rounded-lg border ${prodBlocked ? "border-rose-300" : "border-slate-200"} mb-3 overflow-hidden">
+        <div class="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+          <div>
+            <div class="font-medium text-slate-900">${escapeHtml(first.title || "(no title)")}</div>
+            <div class="text-xs text-slate-500"><code>${escapeHtml(pid)}</code> · ${items.length} variant(s) · ${escapeHtml(first.brand || "")}</div>
+          </div>
+          ${productBadge}
         </div>
         <table class="w-full text-xs">
           <thead class="text-slate-500">
-            <tr><th class="text-left px-4 py-1.5 font-medium">SKU</th><th class="text-left px-3 py-1.5 font-medium">EAN</th><th class="text-left px-3 py-1.5 font-medium">Axes</th><th class="text-right px-3 py-1.5 font-medium">Price</th><th class="text-right px-3 py-1.5 font-medium">Stock</th><th class="text-right px-4 py-1.5 font-medium">Dry-run</th></tr>
+            <tr>
+              <th class="text-left px-4 py-1.5 font-medium">SKU</th>
+              <th class="text-left px-3 py-1.5 font-medium">EAN</th>
+              <th class="text-left px-3 py-1.5 font-medium">Axes</th>
+              <th class="text-right px-3 py-1.5 font-medium">Price</th>
+              <th class="text-right px-3 py-1.5 font-medium">Stock</th>
+              <th class="text-left px-3 py-1.5 font-medium">Audit</th>
+              <th class="text-right px-4 py-1.5 font-medium">Outcome</th>
+            </tr>
           </thead>
           <tbody>
             ${items.map(it => {
               const r = it.row;
               const axes = [r.size, r.color, r.weight_oz ? r.weight_oz + "oz" : null].filter(Boolean).join(" / ");
+              const audit = audits[r.sku || ""] || newAudit();
+              const sev = auditSeverity(audit);
+              const cat = audit.detectedCategory && audit.detectedCategory !== "uncategorized"
+                ? `<span class="text-[10px] text-slate-400 ml-1">${audit.detectedCategory}</span>` : "";
               return `<tr class="border-t border-slate-100">
                 <td class="px-4 py-2 font-mono">${escapeHtml(r.sku || "")}</td>
                 <td class="px-3 py-2 font-mono text-slate-500">${escapeHtml(r.ean || "")}</td>
                 <td class="px-3 py-2 text-slate-600">${escapeHtml(axes)}</td>
                 <td class="px-3 py-2 text-right tabular-nums">€${(parseFloat(String(r.price).replace(",", ".")) || 0).toFixed(2)}</td>
                 <td class="px-3 py-2 text-right tabular-nums">${r.stock || 0}</td>
-                <td class="px-4 py-2 text-right"><span class="pill pill-dry">Dry-run OK</span></td></tr>`;
+                <td class="px-3 py-2"><span class="pill ${Severity.cssClass(sev)}">${Severity.label(sev)}</span>${cat}</td>
+                <td class="px-4 py-2 text-right">${isBlocked(audit) ? '<span class="pill pill-error">Blocked</span>' : '<span class="pill pill-dry">Dry-run OK</span>'}</td></tr>`;
             }).join("")}
           </tbody>
-        </table>
-      </div>`;
+        </table>`;
+
+    // Compliance findings panel per product
+    const allIssues = [];
+    items.forEach(it => {
+      const audit = audits[it.row.sku || ""];
+      if (!audit) return;
+      audit.issues.forEach(issue => {
+        if (issue.severity >= Severity.INFO) allIssues.push({sku: it.row.sku, issue});
+      });
+    });
+    if (allIssues.length > 0) {
+      html += `
+        <div class="border-t border-slate-100 bg-slate-50/40">
+          <div class="px-4 py-1.5 text-[11px] font-medium text-slate-600 uppercase tracking-wide">
+            Compliance audit (${allIssues.length} finding${allIssues.length > 1 ? "s" : ""})
+          </div>
+          <table class="w-full text-[11px]">
+            <thead class="text-slate-500">
+              <tr>
+                <th class="text-left px-4 py-1 font-medium">SKU</th>
+                <th class="text-left px-3 py-1 font-medium">Severity</th>
+                <th class="text-left px-3 py-1 font-medium">Code</th>
+                <th class="text-left px-4 py-1 font-medium">Issue</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${allIssues.map(({sku, issue}) => `<tr class="border-t border-slate-100/70">
+                <td class="px-4 py-1.5 font-mono text-slate-600">${escapeHtml(sku || "")}</td>
+                <td class="px-3 py-1.5"><span class="pill ${Severity.cssClass(issue.severity)}">${Severity.label(issue.severity)}</span></td>
+                <td class="px-3 py-1.5 font-mono text-slate-500">${escapeHtml(issue.code)}</td>
+                <td class="px-4 py-1.5 text-slate-700">
+                  ${escapeHtml(issue.message)}
+                  ${issue.suggestion ? `<div class="text-slate-500 mt-0.5">${escapeHtml(issue.suggestion)}</div>` : ""}
+                </td></tr>`).join("")}
+            </tbody>
+          </table>
+        </div>`;
+    }
+
+    html += `</div>`;
   });
+
   html += `</div>`;
   document.getElementById("preview-area").innerHTML = html;
 }
@@ -652,6 +1003,17 @@ function loadCorruptedCsv() {
     `fightstore-tatami-estilo-blk,Tatami,Tatami Gi,Pearl weave,bjj/gi/adult,https://cdn.example.com/a.jpg,TAT-EST-BLK-A1,"8,59507E+12",129.90,4,Tatami Ltd,info@tatami.com,UK,,,A1,black,,EUR,99.00,NEW,1,1800\n` +
     `fightstore-venum-impact-blk,Venum,Venum Gloves,desc,boxing/gloves,https://cdn.example.com/b.jpg,VEN-IMP-BLK-12,5011523456701,79.90,10,Venum SAS,info@venum.com,Paris,,,,black,12,EUR,59.00,NEW,1,\n`;
   setTimeout(() => parseCsv("baselinker-export-broken.csv", bad), 50);
+}
+
+function loadBannedCsv() {
+  // Demonstrates the compliance audit: medical claims, mystery box, replica.
+  showView("upload");
+  const bad = SAMPLE_CSV_HEADER + "\n" +
+    `quack-pill,QuackCo,Miracle Vitamin Cures Cancer SALE 50% OFF,Lose 10 kg in a week! Best ever. Coronavirus protection guaranteed,beauty/supplements,https://cdn.example.com/a.jpg,QC-1,5011523456705,29.90,100,QuackCo Ltd,info@quack.co,UK,,,one-size,,,EUR,19.00,NEW,1,\n` +
+    `mystery-box-1,LootHQ,Anime Mystery Box,5 random anime figures per surprise box,home-garden,https://cdn.example.com/b.jpg,MB-1,5011523456712,39.00,30,LootHQ,info@loot.example,DE,,,,,,EUR,25.00,NEW,1,\n` +
+    `replica-1,LuxuryStyle,Replica Rolex Submariner Watch,Looks identical to the real thing,fashion,https://cdn.example.com/c.jpg,RX-1,5011523456729,89.00,10,LuxStyle,info@lux.example,CN,,,,silver,,EUR,69.00,NEW,1,\n` +
+    `fightstore-venum-impact-blk,Venum,Venum Impact Boxing Gloves,Premium synthetic leather triple-density foam padding made for sparring.,boxing/gloves,https://cdn.example.com/d.jpg,VEN-IMP-BLK-12,4055605012343,79.90,10,Venum SAS,info@venum.com,Paris,,,,black,12,EUR,59.00,NEW,1,\n`;
+  setTimeout(() => parseCsv("non-compliant-export.csv", bad), 50);
 }
 
 function downloadSampleCsv() {
