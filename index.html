@@ -516,6 +516,81 @@ function perCategoryCombat(audit, title, description) {
   }
 }
 
+
+// ─── Layer 5 — additional per-category modules ────────────────────
+
+// electronics: CE marking, mains voltage, battery capacity
+const RX_CE = /\bCE[-\s]?(mark|gekennzeichnet|conformity|marked)\b/i;
+const RX_VOLTAGE = /\b(\d{2,3}\s*V|volt|volts|\d+\s*Hz)\b/i;
+const RX_MAINS = /\b(plug-in|mains|netzbetrieb|steckdose|220V|230V|110V)\b/i;
+const RX_BATTERY = /\b(battery|akku|batterie|lithium|li-ion|li-po|NiMH|alkaline)\b/i;
+const RX_CAPACITY = /\b\d{2,5}\s*(mAh|Wh|kWh)\b/i;
+
+function perCategoryElectronics(audit, title, description) {
+  const layer = "per_category:electronics";
+  const c = `${title} ${description}`;
+  if (!RX_CE.test(c)) add(audit, "CAT_ELEC_NO_CE", Severity.WARN, layer, "Electronics listing does not mention CE marking.", "State 'CE marked' or 'CE certified' (EU 2014/35/EU / 2014/30/EU).");
+  if (RX_MAINS.test(c) && !RX_VOLTAGE.test(c)) add(audit, "CAT_ELEC_NO_VOLTAGE", Severity.FAIL, layer, "Mains-powered device but no voltage/frequency stated.", "Add '230 V / 50 Hz' for regional compatibility.");
+  if (RX_BATTERY.test(c) && !RX_CAPACITY.test(c)) add(audit, "CAT_ELEC_BATTERY_NO_CAPACITY", Severity.WARN, layer, "Battery product without capacity (mAh/Wh).", "Cell capacity is a primary buyer filter.");
+}
+
+// fashion: fibre composition, size, country of origin
+const RX_FABRIC = /\b\d{1,3}\s*%\s*(cotton|polyester|wool|nylon|elastane|spandex|silk|linen|baumwolle|polyamid|seide|leinen|wolle)\b/i;
+const RX_SIZE_F = /\b(size\s+(s|m|l|xl|xxl|xxxl|\d{2})|größe|EU\s+\d{2})\b/i;
+const RX_MADE_IN = /\b(made\s+in|hergestellt\s+in|origin|herkunftsland)\b/i;
+
+function perCategoryFashion(audit, title, description) {
+  const layer = "per_category:fashion";
+  const c = `${title} ${description}`;
+  if (!RX_FABRIC.test(c)) add(audit, "CAT_FASHION_NO_FIBRE", Severity.FAIL, layer, "Textile listing without fibre composition.", "EU Textile Reg 1007/2011 requires it (e.g. '95% cotton, 5% elastane').");
+  if (!RX_SIZE_F.test(c)) add(audit, "CAT_FASHION_NO_SIZE", Severity.WARN, layer, "Fashion listing without a size declared.", "State S/M/L/XL or EU number.");
+  if (!RX_MADE_IN.test(c)) add(audit, "CAT_FASHION_NO_ORIGIN", Severity.INFO, layer, "Country of origin not stated.");
+}
+
+// home-garden: cookware food-grade, knife blade length, outdoor IP rating
+const RX_COOKWARE = /\b(pan|frying\s+pan|saucepan|pot|wok|skillet|pfanne|topf|kochtopf|kasserolle)\b/i;
+const RX_FOOD_GRADE = /\b(food[-\s]?grade|food[-\s]?safe|lebensmittelecht|geprüft\s+nach\s+lfgb)\b/i;
+const RX_KNIFE = /\b(kitchen\s+knife|messer|chef'?s\s+knife|cleaver)\b/i;
+const RX_BLADE_LEN = /\b\d{1,2}\s*(cm|mm)\s*(blade|klinge|long)?\b/i;
+const RX_OUTDOOR = /\b(outdoor|garden\s+furniture|patio|weatherproof|wetterfest|all[-\s]?weather)\b/i;
+const RX_IP_RATING = /\bIP[X]?\d{1,2}\b/i;
+
+function perCategoryHomeGarden(audit, title, description) {
+  const layer = "per_category:home-garden";
+  const c = `${title} ${description}`;
+  if (RX_COOKWARE.test(c) && !RX_FOOD_GRADE.test(c)) add(audit, "CAT_HOME_COOKWARE_NO_FOOD_GRADE", Severity.FAIL, layer, "Cookware without food-safety wording.", "EC Reg 1935/2004 mandates 'food-grade' / 'LFGB-geprüft' for food-contact materials.");
+  if (RX_KNIFE.test(c) && !RX_BLADE_LEN.test(c)) add(audit, "CAT_HOME_KNIFE_NO_BLADE_LEN", Severity.WARN, layer, "Knife listing without blade length.", "State blade length in cm (WaffG awareness >12 cm).");
+  if (RX_OUTDOOR.test(c) && !RX_IP_RATING.test(c)) add(audit, "CAT_HOME_OUTDOOR_NO_IP", Severity.INFO, layer, "Outdoor/weatherproof claim without IP rating.");
+}
+
+// books-media: ISBN, author, publisher
+const RX_BOOK = /\b(book|novel|biography|paperback|hardcover|audiobook|textbook|buch|roman|hörbuch|sachbuch)\b/i;
+const RX_ISBN = /\bISBN[-\s]?(10|13)?\s*[:#]?\s*[\d-]{10,17}\b/i;
+const RX_AUTHOR = /\b(by\s+\w+|author[:\s]|autor[:\s]|von\s+\w+)\b/i;
+const RX_PUBLISHER = /\b(publisher|published\s+by|verlag|herausgeber)\b/i;
+
+function perCategoryBooks(audit, title, description) {
+  const layer = "per_category:books-media";
+  const c = `${title} ${description}`;
+  if (!RX_BOOK.test(c)) return;
+  if (!RX_ISBN.test(c)) add(audit, "CAT_BOOKS_NO_ISBN", Severity.WARN, layer, "Book listing without an ISBN.", "ISBN-10/13 is the canonical book identifier.");
+  if (!RX_AUTHOR.test(c)) add(audit, "CAT_BOOKS_NO_AUTHOR", Severity.INFO, layer, "No author attribution found.");
+  if (!RX_PUBLISHER.test(c)) add(audit, "CAT_BOOKS_NO_PUBLISHER", Severity.INFO, layer, "No publisher mentioned.");
+}
+
+// beauty: INCI, PAO, allergen-free claims
+const RX_INCI = /\bINCI[:\s]|\bingredients?[:\s]|\binhaltsstoffe\b/i;
+const RX_PAO = /\b(PAO|period\s+after\s+opening|nach\s+öffnen|\d{1,2}\s*M\b)\b/i;
+const RX_ALLERGEN_HINT = /\b(paraben[-\s]?free|sulfate[-\s]?free|silicone[-\s]?free|parabenfrei|sulfatfrei|silikonfrei)\b/i;
+
+function perCategoryBeauty(audit, title, description) {
+  const layer = "per_category:beauty";
+  const c = `${title} ${description}`;
+  if (!RX_INCI.test(c)) add(audit, "CAT_BEAUTY_NO_INCI", Severity.WARN, layer, "Beauty listing without an ingredient (INCI) list.", "EU Cosmetics Reg 1223/2009 requires INCI disclosure.");
+  if (!RX_PAO.test(c)) add(audit, "CAT_BEAUTY_NO_PAO", Severity.INFO, layer, "No PAO (period-after-opening) declared.");
+  if (RX_ALLERGEN_HINT.test(c)) add(audit, "CAT_BEAUTY_ALLERGEN_HINT", Severity.INFO, layer, "'-free' allergen claim detected.", "Confirm the substance is absent from INCI (UWG risk).");
+}
+
 // ─── Orchestrator ─────────────────────────────────────────────────
 function runAudit(title, description, brand) {
   const audit = newAudit();
@@ -523,8 +598,13 @@ function runAudit(title, description, brand) {
   checkClaims(audit, title, description);
   checkBanned(audit, title, description, brand);
   detectCategory(audit, title, description);
-  if (audit.detectedCategory === "combat-sports") {
-    perCategoryCombat(audit, title, description);
+  switch (audit.detectedCategory) {
+    case "combat-sports": perCategoryCombat(audit, title, description); break;
+    case "electronics":   perCategoryElectronics(audit, title, description); break;
+    case "fashion":       perCategoryFashion(audit, title, description); break;
+    case "home-garden":   perCategoryHomeGarden(audit, title, description); break;
+    case "books-media":   perCategoryBooks(audit, title, description); break;
+    case "beauty":        perCategoryBeauty(audit, title, description); break;
   }
   return audit;
 }
